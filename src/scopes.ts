@@ -111,8 +111,8 @@ export class MemoryScopeManager implements ScopeManager {
 
   getAccessibleScopes(agentId?: string): string[] {
     if (!agentId) {
-      // No agent specified, return all scopes
-      return this.getAllScopes();
+      // Fail-closed: unknown caller only gets global scope
+      return ["global"];
     }
 
     // Check explicit agent access configuration
@@ -135,7 +135,7 @@ export class MemoryScopeManager implements ScopeManager {
 
   getDefaultScope(agentId?: string): string {
     if (!agentId) {
-      return this.config.default;
+      return "global";
     }
 
     // For agents, default to their private scope if they have access to it
@@ -151,8 +151,8 @@ export class MemoryScopeManager implements ScopeManager {
 
   isAccessible(scope: string, agentId?: string): boolean {
     if (!agentId) {
-      // No agent specified, allow access to all valid scopes
-      return this.validateScope(scope);
+      // Fail-closed: unknown caller only gets global scope
+      return scope === "global";
     }
 
     const accessibleScopes = this.getAccessibleScopes(agentId);

@@ -157,6 +157,12 @@ Filters out low-quality content at both auto-capture and tool-store stages:
 - **Auto-Capture** (`agent_end` hook): Extracts preference/fact/decision/entity from conversations, deduplicates, stores up to 3 per turn
 - **Auto-Recall** (`before_agent_start` hook): Injects `<relevant-memories>` context (up to 3 entries)
 
+### Security defaults
+
+- **Unknown agent scope is fail-closed**: when agent identity is missing, access defaults to `global` only.
+- **Backups are opt-in**: plaintext JSONL backups are disabled unless `backup.enabled: true`.
+- **Rerank endpoint trust policy**: cross-encoder rerank only calls HTTPS endpoints on `api.jina.ai`, `api.siliconflow.com`, or `api.pinecone.io` unless `retrieval.allowUntrustedRerankEndpoint: true` is explicitly set.
+
 ---
 
 ## Installation
@@ -316,6 +322,7 @@ openclaw config get plugins.slots.memory
     "rerankApiKey": "${JINA_API_KEY}",
     "rerankModel": "jina-reranker-v3",
     "rerankEndpoint": "https://api.jina.ai/v1/rerank",
+    "allowUntrustedRerankEndpoint": false,
     "rerankProvider": "jina",
     "candidatePoolSize": 20,
     "recencyHalfLifeDays": 14,
@@ -339,6 +346,10 @@ openclaw config get plugins.slots.memory
   "sessionMemory": {
     "enabled": false,
     "messageCount": 15
+  },
+  "backup": {
+    "enabled": false,
+    "keepDays": 7
   }
 }
 ```
