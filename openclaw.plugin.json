@@ -116,6 +116,11 @@
             "default": "https://api.jina.ai/v1/rerank",
             "description": "Reranker API endpoint URL. Compatible with Jina, SiliconFlow, Pinecone, or any service with a similar interface."
           },
+          "allowUntrustedRerankEndpoint": {
+            "type": "boolean",
+            "default": false,
+            "description": "Allow non-allowlisted or non-HTTPS reranker endpoints (unsafe)."
+          },
           "rerankProvider": {
             "type": "string",
             "enum": [
@@ -189,6 +194,24 @@
             "maximum": 100,
             "default": 15,
             "description": "Number of recent messages to include in session summary"
+          }
+        }
+      },
+      "backup": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable periodic plaintext JSONL backups (disabled by default)."
+          },
+          "keepDays": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365,
+            "default": 7,
+            "description": "How many daily backups to keep before pruning old files."
           }
         }
       },
@@ -314,6 +337,11 @@
       "help": "Custom reranker API endpoint URL",
       "advanced": true
     },
+    "retrieval.allowUntrustedRerankEndpoint": {
+      "label": "Allow Untrusted Reranker Endpoint",
+      "help": "By default only HTTPS endpoints on api.jina.ai, api.siliconflow.com, and api.pinecone.io are allowed. Enable this only if you trust your custom endpoint.",
+      "advanced": true
+    },
     "retrieval.rerankProvider": {
       "label": "Reranker Provider",
       "help": "Provider format: jina (default), siliconflow, or pinecone",
@@ -331,6 +359,16 @@
     "sessionMemory.messageCount": {
       "label": "Session Message Count",
       "help": "Number of recent messages to include in session summaries",
+      "advanced": true
+    },
+    "backup.enabled": {
+      "label": "Enable Backups",
+      "help": "Write daily plaintext JSONL backups (disabled by default for security).",
+      "advanced": true
+    },
+    "backup.keepDays": {
+      "label": "Backup Retention (days)",
+      "help": "How many daily backup files to keep before pruning old backups.",
       "advanced": true
     },
     "scopes.default": {

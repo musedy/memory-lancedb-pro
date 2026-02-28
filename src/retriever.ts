@@ -35,6 +35,8 @@ export interface RetrievalConfig {
    *  - "siliconflow": same format as jina (alias, for clarity)
    *  - "pinecone": Api-Key header, {text}[] documents, data[].score */
   rerankProvider?: "jina" | "siliconflow" | "pinecone";
+  /** Allow non-allowlisted/non-HTTPS rerank endpoint (default false). */
+  allowUntrustedRerankEndpoint: boolean;
   /**
    * Length normalization: penalize long entries that dominate via sheer keyword
    * density. Formula: score *= 1 / (1 + log2(charLen / anchor)).
@@ -92,6 +94,7 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   filterNoise: true,
   rerankModel: "jina-reranker-v3",
   rerankEndpoint: "https://api.jina.ai/v1/rerank",
+  allowUntrustedRerankEndpoint: false,
   lengthNormAnchor: 500,
   hardMinScore: 0.35,
   timeDecayHalfLifeDays: 60,
@@ -109,6 +112,32 @@ function clampInt(value: number, min: number, max: number): number {
 function clamp01(value: number, fallback: number): number {
   if (!Number.isFinite(value)) return Number.isFinite(fallback) ? fallback : 0;
   return Math.min(1, Math.max(0, value));
+}
+
+const TRUSTED_RERANK_HOSTS = new Set([
+  "api.jina.ai",
+  "api.siliconflow.com",
+  "api.pinecone.io",
+]);
+
+function validateRerankEndpoint(endpoint: string): { ok: true } | { ok: false; reason: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    return { ok: false, reason: "invalid URL" };
+  }
+
+  if (parsed.protocol !== "https:") {
+    return { ok: false, reason: "endpoint must use https" };
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (!TRUSTED_RERANK_HOSTS.has(host)) {
+    return { ok: false, reason: `host '${host}' is not in trusted allowlist` };
+  }
+
+  return { ok: true };
 }
 
 // ============================================================================
@@ -431,6 +460,14 @@ export class MemoryRetriever {
         const endpoint = this.config.rerankEndpoint || "https://api.jina.ai/v1/rerank";
         const documents = results.map(r => r.entry.text);
 
+        if (!this.config.allowUntrustedRerankEndpoint) {
+          const endpointCheck = validateRerankEndpoint(endpoint);
+          if (!endpointCheck.ok) {
+            console.warn(`Rerank API endpoint rejected (${endpointCheck.reason}), falling back to cosine`);
+            throw new Error("trusted-rerank-endpoint-required");
+          }
+        }
+
         // Build provider-specific request
         const { headers, body } = buildRerankRequest(provider, this.config.rerankApiKey, model, query, documents, results.length);
 
@@ -490,7 +527,9 @@ export class MemoryRetriever {
           console.warn(`Rerank API returned ${response.status}: ${errText.slice(0, 200)}, falling back to cosine`);
         }
       } catch (error) {
-        if (error instanceof Error && error.name === "AbortError") {
+        if (error instanceof Error && error.message === "trusted-rerank-endpoint-required") {
+          // Already warned above; fall through to cosine fallback.
+        } else if (error instanceof Error && error.name === "AbortError") {
           console.warn("Rerank API timed out (5s), falling back to cosine");
         } else {
           console.warn("Rerank API failed, falling back to cosine:", error);

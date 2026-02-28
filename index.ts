@@ -49,6 +49,7 @@ interface PluginConfig {
     rerankModel?: string;
     rerankEndpoint?: string;
     rerankProvider?: "jina" | "siliconflow" | "pinecone";
+    allowUntrustedRerankEndpoint?: boolean;
     recencyHalfLifeDays?: number;
     recencyWeight?: number;
     filterNoise?: boolean;
@@ -63,6 +64,7 @@ interface PluginConfig {
   };
   enableManagementTools?: boolean;
   sessionMemory?: { enabled?: boolean; messageCount?: number };
+  backup?: { enabled?: boolean; keepDays?: number };
 }
 
 // ============================================================================
@@ -512,6 +514,10 @@ const memoryLanceDBProPlugin = {
           api.logger.debug("session-memory: hook triggered for /new command");
 
           const context = (event.context || {}) as Record<string, unknown>;
+          const agentId = typeof context.agentId === "string" && context.agentId.trim().length > 0
+            ? context.agentId
+            : "main";
+          const defaultScope = scopeManager.getDefaultScope(agentId);
           const sessionEntry = (context.previousSessionEntry || context.sessionEntry || {}) as Record<string, unknown>;
           const currentSessionId = sessionEntry.sessionId as string | undefined;
           let currentSessionFile = (sessionEntry.sessionFile as string) || undefined;
@@ -568,7 +574,7 @@ const memoryLanceDBProPlugin = {
             text: memoryText,
             vector,
             category: "fact",
-            scope: "global",
+            scope: defaultScope,
             importance: 0.5,
             metadata: JSON.stringify({
               type: "session-summary",
@@ -593,8 +599,14 @@ const memoryLanceDBProPlugin = {
 
     let backupTimer: ReturnType<typeof setInterval> | null = null;
     const BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+    const backupEnabled = config.backup?.enabled === true;
+    const backupKeepDays = parsePositiveInt(config.backup?.keepDays) ?? 7;
 
     async function runBackup() {
+      if (!backupEnabled) {
+        return;
+      }
+
       try {
         const backupDir = api.resolvePath(join(resolvedDbPath, "..", "backups"));
         await mkdir(backupDir, { recursive: true });
@@ -617,11 +629,11 @@ const memoryLanceDBProPlugin = {
 
         await writeFile(backupFile, lines.join("\n") + "\n");
 
-        // Keep only last 7 backups
+        // Keep only last N backups
         const files = (await readdir(backupDir)).filter(f => f.startsWith("memory-backup-") && f.endsWith(".jsonl")).sort();
-        if (files.length > 7) {
+        if (files.length > backupKeepDays) {
           const { unlink } = await import("node:fs/promises");
-          for (const old of files.slice(0, files.length - 7)) {
+          for (const old of files.slice(0, files.length - backupKeepDays)) {
             await unlink(join(backupDir, old)).catch(() => {});
           }
         }
@@ -659,9 +671,11 @@ const memoryLanceDBProPlugin = {
             api.logger.warn(`memory-lancedb-pro: retrieval test failed: ${retrievalTest.error}`);
           }
 
-          // Run initial backup after a short delay, then schedule daily
-          setTimeout(() => runBackup(), 60_000); // 1 min after start
-          backupTimer = setInterval(() => runBackup(), BACKUP_INTERVAL_MS);
+          // Run initial backup after a short delay, then schedule daily (opt-in)
+          if (backupEnabled) {
+            setTimeout(() => runBackup(), 60_000); // 1 min after start
+            backupTimer = setInterval(() => runBackup(), BACKUP_INTERVAL_MS);
+          }
         } catch (error) {
           api.logger.warn(`memory-lancedb-pro: startup test failed: ${String(error)}`);
         }
@@ -725,6 +739,15 @@ function parsePluginConfig(value: unknown): PluginConfig {
               : undefined,
           }
         : undefined,
+      backup: typeof cfg.backup === "object" && cfg.backup !== null
+        ? {
+            enabled: (cfg.backup as Record<string, unknown>).enabled === true,
+            keepDays: parsePositiveInt((cfg.backup as Record<string, unknown>).keepDays) ?? 7,
+          }
+        : {
+            enabled: false,
+            keepDays: 7,
+          },
     };
 }
 
