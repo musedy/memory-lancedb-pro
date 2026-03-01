@@ -17,6 +17,7 @@ import { createScopeManager } from "./src/scopes.js";
 import { createMigrator } from "./src/migrate.js";
 import { registerAllMemoryTools } from "./src/tools.js";
 import { shouldSkipRetrieval } from "./src/adaptive-retrieval.js";
+import { createMemoryCurationEngine, DEFAULT_CURATION_CONFIG } from "./src/curation.js";
 import { createMemoryCLI } from "./cli.js";
 
 // ============================================================================
@@ -73,6 +74,13 @@ interface PluginConfig {
   enableManagementTools?: boolean;
   sessionMemory?: { enabled?: boolean; messageCount?: number };
   backup?: { enabled?: boolean; keepDays?: number };
+  curation: {
+    enabled: boolean;
+    decayHalfLifeDays: number;
+    pruneThreshold: number;
+    maxDeletesPerRun: number;
+    schedule: string;
+  };
 }
 
 // ============================================================================
@@ -106,6 +114,33 @@ function parsePositiveInt(value: unknown): number | undefined {
     if (Number.isFinite(n) && n > 0) return Math.floor(n);
   }
   return undefined;
+}
+
+function parseNumberInRange(value: unknown, min: number, max: number): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value >= min && value <= max) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return undefined;
+    const resolved = resolveEnvVars(s);
+    const n = Number(resolved);
+    if (Number.isFinite(n) && n >= min && n <= max) {
+      return n;
+    }
+  }
+  return undefined;
+}
+
+function parseConfigString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const s = value.trim();
+  if (!s) {
+    return undefined;
+  }
+  return resolveEnvVars(s);
 }
 
 // ============================================================================
@@ -329,6 +364,11 @@ const memoryLanceDBProPlugin = {
     });
     const scopeManager = createScopeManager(config.scopes);
     const migrator = createMigrator(store);
+    const curationEngine = createMemoryCurationEngine({
+      store,
+      logger: api.logger,
+      config: config.curation,
+    });
 
     const pluginVersion = getPluginVersion();
 
@@ -719,12 +759,15 @@ const memoryLanceDBProPlugin = {
           setTimeout(() => void runBackup(), 60_000); // 1 min after start
           backupTimer = setInterval(() => void runBackup(), BACKUP_INTERVAL_MS);
         }
+
+        curationEngine.start();
       },
       stop: () => {
         if (backupTimer) {
           clearInterval(backupTimer);
           backupTimer = null;
         }
+        curationEngine.stop();
         api.logger.info("memory-lancedb-pro: stopped");
       },
     });
@@ -790,6 +833,19 @@ function parsePluginConfig(value: unknown): PluginConfig {
           enabled: false,
           keepDays: 7,
         },
+    curation: typeof cfg.curation === "object" && cfg.curation !== null
+      ? {
+          enabled: (cfg.curation as Record<string, unknown>).enabled === true,
+          decayHalfLifeDays: parsePositiveInt((cfg.curation as Record<string, unknown>).decayHalfLifeDays)
+            ?? DEFAULT_CURATION_CONFIG.decayHalfLifeDays,
+          pruneThreshold: parseNumberInRange((cfg.curation as Record<string, unknown>).pruneThreshold, 0, 1)
+            ?? DEFAULT_CURATION_CONFIG.pruneThreshold,
+          maxDeletesPerRun: parsePositiveInt((cfg.curation as Record<string, unknown>).maxDeletesPerRun)
+            ?? DEFAULT_CURATION_CONFIG.maxDeletesPerRun,
+          schedule: parseConfigString((cfg.curation as Record<string, unknown>).schedule)
+            ?? DEFAULT_CURATION_CONFIG.schedule,
+        }
+      : { ...DEFAULT_CURATION_CONFIG },
   };
 }
 
