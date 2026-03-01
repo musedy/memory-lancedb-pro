@@ -40,6 +40,13 @@ interface PluginConfig {
   captureAssistant?: boolean;
   retrieval?: {
     mode?: "hybrid" | "vector";
+    ranking?: "similarity" | "salience";
+    salienceWeights?: {
+      similarity: number;
+      recency: number;
+      reinforcement: number;
+      importance: number;
+    };
     vectorWeight?: number;
     bm25Weight?: number;
     minScore?: number;
@@ -387,12 +394,22 @@ const memoryLanceDBProPlugin = {
             return;
           }
 
+          let reinforcedCount = 0;
+          try {
+            reinforcedCount = await store.markAccessed(
+              results.map((r) => r.entry.id),
+              accessibleScopes
+            );
+          } catch (reinforceErr) {
+            api.logger.debug?.(`memory-lancedb-pro: reinforcement update skipped: ${String(reinforceErr)}`);
+          }
+
           const memoryContext = results
             .map((r) => `- [${r.entry.category}:${r.entry.scope}] ${sanitizeForContext(r.entry.text)} (${(r.score * 100).toFixed(0)}%${r.sources?.bm25 ? ', vector+BM25' : ''}${r.sources?.reranked ? '+reranked' : ''})`)
             .join("\n");
 
           api.logger.info?.(
-            `memory-lancedb-pro: injecting ${results.length} memories into context for agent ${agentId}`
+            `memory-lancedb-pro: injecting ${results.length} memories into context for agent ${agentId} (reinforced=${reinforcedCount})`
           );
 
           return {
@@ -466,30 +483,30 @@ const memoryLanceDBProPlugin = {
 
           // Store each capturable piece (limit to 3 per conversation)
           let stored = 0;
+          let merged = 0;
           for (const text of toCapture.slice(0, 3)) {
             const category = detectCategory(text);
             const vector = await embedder.embedPassage(text);
-
-            // Check for duplicates using raw vector similarity (bypasses importance/recency weighting)
-            const existing = await store.vectorSearch(vector, 1, 0.1, [defaultScope]);
-
-            if (existing.length > 0 && existing[0].score > 0.95) {
-              continue;
+            const writeResult = await store.storeOrMerge(
+              {
+                text,
+                vector,
+                importance: 0.7,
+                category,
+                scope: defaultScope,
+              },
+              { duplicateThreshold: 0.95 }
+            );
+            if (writeResult.action === "created") {
+              stored++;
+            } else {
+              merged++;
             }
-
-            await store.store({
-              text,
-              vector,
-              importance: 0.7,
-              category,
-              scope: defaultScope,
-            });
-            stored++;
           }
 
-          if (stored > 0) {
+          if (stored > 0 || merged > 0) {
             api.logger.info(
-              `memory-lancedb-pro: auto-captured ${stored} memories for agent ${agentId} in scope ${defaultScope}`
+              `memory-lancedb-pro: auto-captured ${stored} memories and merged ${merged} duplicates for agent ${agentId} in scope ${defaultScope}`
             );
           }
         } catch (err) {

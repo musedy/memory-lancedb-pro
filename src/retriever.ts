@@ -13,6 +13,13 @@ import { filterNoise } from "./noise-filter.js";
 
 export interface RetrievalConfig {
   mode: "hybrid" | "vector";
+  ranking: "similarity" | "salience";
+  salienceWeights: {
+    similarity: number;
+    recency: number;
+    reinforcement: number;
+    importance: number;
+  };
   vectorWeight: number;
   bm25Weight: number;
   minScore: number;
@@ -84,6 +91,13 @@ export interface RetrievalResult extends MemorySearchResult {
 
 export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   mode: "hybrid",
+  ranking: "similarity",
+  salienceWeights: {
+    similarity: 0.55,
+    recency: 0.20,
+    reinforcement: 0.15,
+    importance: 0.10,
+  },
   vectorWeight: 0.7,
   bm25Weight: 0.3,
   minScore: 0.3,
@@ -112,6 +126,11 @@ function clampInt(value: number, min: number, max: number): number {
 function clamp01(value: number, fallback: number): number {
   if (!Number.isFinite(value)) return Number.isFinite(fallback) ? fallback : 0;
   return Math.min(1, Math.max(0, value));
+}
+
+function clampNonNegative(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) return Math.max(0, fallback);
+  return Math.max(0, value);
 }
 
 const TRUSTED_RERANK_HOSTS = new Set([
@@ -279,9 +298,10 @@ export class MemoryRetriever {
       },
     } as RetrievalResult));
 
-    const boosted = this.applyRecencyBoost(mapped);
-    const weighted = this.applyImportanceWeight(boosted);
-    const lengthNormalized = this.applyLengthNormalization(weighted);
+    const rankingApplied = this.config.ranking === "salience"
+      ? this.applySalienceRanking(mapped)
+      : this.applyImportanceWeight(this.applyRecencyBoost(mapped));
+    const lengthNormalized = this.applyLengthNormalization(rankingApplied);
     const timeDecayed = this.applyTimeDecay(lengthNormalized);
     const hardFiltered = timeDecayed.filter(r => r.score >= this.config.hardMinScore);
     const denoised = this.config.filterNoise
@@ -322,14 +342,13 @@ export class MemoryRetriever {
       ? await this.rerankResults(query, queryVector, filtered.slice(0, limit * 2))
       : filtered;
 
-    // Apply temporal re-ranking (recency boost)
-    const temporalReranked = this.applyRecencyBoost(reranked);
-
-    // Apply importance weighting
-    const importanceWeighted = this.applyImportanceWeight(temporalReranked);
+    // Ranking mode: default "similarity" keeps legacy behavior.
+    const rankingApplied = this.config.ranking === "salience"
+      ? this.applySalienceRanking(reranked)
+      : this.applyImportanceWeight(this.applyRecencyBoost(reranked));
 
     // Apply length normalization (penalize long entries dominating via keyword density)
-    const lengthNormalized = this.applyLengthNormalization(importanceWeighted);
+    const lengthNormalized = this.applyLengthNormalization(rankingApplied);
 
     // Apply time decay (penalize stale entries)
     const timeDecayed = this.applyTimeDecay(lengthNormalized);
@@ -463,7 +482,8 @@ export class MemoryRetriever {
         if (!this.config.allowUntrustedRerankEndpoint) {
           const endpointCheck = validateRerankEndpoint(endpoint);
           if (!endpointCheck.ok) {
-            console.warn(`Rerank API endpoint rejected (${endpointCheck.reason}), falling back to cosine`);
+            const reason = "reason" in endpointCheck ? endpointCheck.reason : "unknown reason";
+            console.warn(`Rerank API endpoint rejected (${reason}), falling back to cosine`);
             throw new Error("trusted-rerank-endpoint-required");
           }
         }
@@ -606,6 +626,69 @@ export class MemoryRetriever {
     return weighted.sort((a, b) => b.score - a.score);
   }
 
+  private getNormalizedSalienceWeights(): RetrievalConfig["salienceWeights"] {
+    const defaults = DEFAULT_RETRIEVAL_CONFIG.salienceWeights;
+    const raw = this.config.salienceWeights || defaults;
+    const similarity = clampNonNegative(raw.similarity, defaults.similarity);
+    const recency = clampNonNegative(raw.recency, defaults.recency);
+    const reinforcement = clampNonNegative(raw.reinforcement, defaults.reinforcement);
+    const importance = clampNonNegative(raw.importance, defaults.importance);
+    const total = similarity + recency + reinforcement + importance;
+
+    if (total <= 0) {
+      return { ...defaults };
+    }
+
+    return {
+      similarity: similarity / total,
+      recency: recency / total,
+      reinforcement: reinforcement / total,
+      importance: importance / total,
+    };
+  }
+
+  private getRecencySignal(timestamp: number | undefined, now: number): number {
+    const halfLife = this.config.recencyHalfLifeDays;
+    if (!halfLife || halfLife <= 0) {
+      return 0;
+    }
+    const ts = (timestamp && timestamp > 0) ? timestamp : now;
+    const ageDays = (now - ts) / 86_400_000;
+    return clamp01(Math.exp(-ageDays / halfLife), 0);
+  }
+
+  private getReinforcementSignal(value: number | undefined): number {
+    return clamp01(typeof value === "number" ? value : 0, 0);
+  }
+
+  private applySalienceRanking(results: RetrievalResult[]): RetrievalResult[] {
+    if (this.config.ranking !== "salience") {
+      return results;
+    }
+
+    const weights = this.getNormalizedSalienceWeights();
+    const now = Date.now();
+
+    const ranked = results.map((r) => {
+      const similarity = clamp01(r.score, 0);
+      const recency = this.getRecencySignal(r.entry.timestamp, now);
+      const reinforcement = this.getReinforcementSignal(r.entry.reinforcement_score);
+      const importance = clamp01(r.entry.importance ?? 0.7, 0.7);
+      const salienceScore =
+        (weights.similarity * similarity) +
+        (weights.recency * recency) +
+        (weights.reinforcement * reinforcement) +
+        (weights.importance * importance);
+
+      return {
+        ...r,
+        score: clamp01(salienceScore, r.score),
+      };
+    });
+
+    return ranked.sort((a, b) => b.score - a.score);
+  }
+
   /**
    * Length normalization: penalize long entries that dominate search results
    * via sheer keyword density and broad semantic coverage.
@@ -710,7 +793,14 @@ export class MemoryRetriever {
 
   // Update configuration
   updateConfig(newConfig: Partial<RetrievalConfig>): void {
-    this.config = { ...this.config, ...newConfig };
+    this.config = {
+      ...this.config,
+      ...newConfig,
+      salienceWeights: {
+        ...this.config.salienceWeights,
+        ...(newConfig.salienceWeights || {}),
+      },
+    };
   }
 
   // Get current configuration

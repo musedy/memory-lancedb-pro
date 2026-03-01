@@ -75,6 +75,46 @@
             ],
             "default": "hybrid"
           },
+          "ranking": {
+            "type": "string",
+            "enum": [
+              "similarity",
+              "salience"
+            ],
+            "default": "similarity",
+            "description": "Ranking mode. similarity keeps legacy behavior; salience uses a weighted blend of similarity, recency, reinforcement, and importance."
+          },
+          "salienceWeights": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "similarity": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.55
+              },
+              "recency": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.2
+              },
+              "reinforcement": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.15
+              },
+              "importance": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.1
+              }
+            },
+            "description": "Weights used only when retrieval.ranking is salience. Values are normalized at runtime."
+          },
           "vectorWeight": {
             "type": "number",
             "minimum": 0,
@@ -296,6 +336,31 @@
     "retrieval.mode": {
       "label": "Retrieval Mode",
       "help": "Use hybrid search (vector + BM25) or vector-only for backward compatibility",
+      "advanced": true
+    },
+    "retrieval.ranking": {
+      "label": "Ranking Mode",
+      "help": "similarity keeps legacy ranking. salience blends similarity, recency, reinforcement, and importance.",
+      "advanced": true
+    },
+    "retrieval.salienceWeights.similarity": {
+      "label": "Salience Similarity Weight",
+      "help": "Relative weight for semantic similarity in salience mode.",
+      "advanced": true
+    },
+    "retrieval.salienceWeights.recency": {
+      "label": "Salience Recency Weight",
+      "help": "Relative weight for recency in salience mode.",
+      "advanced": true
+    },
+    "retrieval.salienceWeights.reinforcement": {
+      "label": "Salience Reinforcement Weight",
+      "help": "Relative weight for reinforcement score in salience mode.",
+      "advanced": true
+    },
+    "retrieval.salienceWeights.importance": {
+      "label": "Salience Importance Weight",
+      "help": "Relative weight for memory importance in salience mode.",
       "advanced": true
     },
     "retrieval.vectorWeight": {

@@ -201,7 +201,7 @@ export class MemoryMigrator {
           }),
         };
 
-        await this.targetStore.store(newEntry);
+        await this.targetStore.storeOrMerge(newEntry, { duplicateThreshold: 0.95 });
         migrated++;
 
         if (migrated % 100 === 0) {

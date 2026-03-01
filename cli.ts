@@ -184,6 +184,8 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
           scopes: scopeStats,
           retrieval: {
             mode: retrievalConfig.mode,
+            ranking: retrievalConfig.ranking,
+            salienceWeights: retrievalConfig.salienceWeights,
             hasFtsSupport: context.store.hasFtsSupport,
           },
         };
@@ -195,6 +197,16 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
           console.log(`• Total memories: ${stats.totalCount}`);
           console.log(`• Available scopes: ${scopeStats.totalScopes}`);
           console.log(`• Retrieval mode: ${retrievalConfig.mode}`);
+          console.log(`• Ranking mode: ${retrievalConfig.ranking}`);
+          if (retrievalConfig.ranking === "salience") {
+            console.log(
+              `• Salience weights: ` +
+              `similarity=${retrievalConfig.salienceWeights.similarity.toFixed(2)}, ` +
+              `recency=${retrievalConfig.salienceWeights.recency.toFixed(2)}, ` +
+              `reinforcement=${retrievalConfig.salienceWeights.reinforcement.toFixed(2)}, ` +
+              `importance=${retrievalConfig.salienceWeights.importance.toFixed(2)}`
+            );
+          }
           console.log(`• FTS support: ${context.store.hasFtsSupport ? 'Yes' : 'No'}`);
           console.log();
 
@@ -359,6 +371,7 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         console.log(`Importing ${data.memories.length} memories...`);
 
         let imported = 0;
+        let merged = 0;
         let skipped = 0;
 
         if (!context.embedder) {
@@ -377,33 +390,29 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
               continue;
             }
 
-            // Check for duplicates
-            const existing = await context.retriever.retrieve({
-              query: text,
-              limit: 1,
-              scopeFilter: [targetScope],
-            });
-            if (existing.length > 0 && existing[0].score > 0.95) {
-              skipped++;
-              continue;
-            }
-
             const vector = await context.embedder.embedPassage(text);
-            await context.store.store({
-              text,
-              vector,
-              importance: memory.importance ?? 0.7,
-              category: memory.category || "other",
-              scope: targetScope,
-            });
-            imported++;
+            const writeResult = await context.store.storeOrMerge(
+              {
+                text,
+                vector,
+                importance: memory.importance ?? 0.7,
+                category: memory.category || "other",
+                scope: targetScope,
+              },
+              { duplicateThreshold: 0.95 }
+            );
+            if (writeResult.action === "created") {
+              imported++;
+            } else {
+              merged++;
+            }
           } catch (error) {
             console.warn(`Failed to import memory: ${error}`);
             skipped++;
           }
         }
 
-        console.log(`Import completed: ${imported} imported, ${skipped} skipped`);
+        console.log(`Import completed: ${imported} imported, ${merged} merged, ${skipped} skipped`);
       } catch (error) {
         console.error("Import failed:", error);
         process.exit(1);

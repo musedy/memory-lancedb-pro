@@ -98,12 +98,23 @@ export function registerMemoryRecallTool(api: OpenClawPluginApi, context: ToolCo
             scopeFilter,
             category,
           });
+          const retrievalConfig = context.retriever.getConfig();
 
           if (results.length === 0) {
             return {
               content: [{ type: "text", text: "No relevant memories found." }],
               details: { count: 0, query, scopes: scopeFilter },
             };
+          }
+
+          let reinforcedCount = 0;
+          try {
+            reinforcedCount = await context.store.markAccessed(
+              results.map(r => r.entry.id),
+              scopeFilter
+            );
+          } catch {
+            // Non-critical path: retrieval result should still be returned.
           }
 
           const text = results
@@ -124,7 +135,9 @@ export function registerMemoryRecallTool(api: OpenClawPluginApi, context: ToolCo
               memories: sanitizeMemoryForSerialization(results),
               query,
               scopes: scopeFilter,
-              retrievalMode: context.retriever.getConfig().mode,
+              retrievalMode: retrievalConfig.mode,
+              retrievalRanking: retrievalConfig.ranking,
+              reinforcedCount,
             },
           };
         } catch (error) {
@@ -187,34 +200,36 @@ export function registerMemoryStoreTool(api: OpenClawPluginApi, context: ToolCon
           const safeImportance = clamp01(importance, 0.7);
           const vector = await context.embedder.embedPassage(text);
 
-          // Check for duplicates using raw vector similarity (bypasses importance/recency weighting)
-          const existing = await context.store.vectorSearch(vector, 1, 0.1, [targetScope]);
+          const writeResult = await context.store.storeOrMerge(
+            {
+              text,
+              vector,
+              importance: safeImportance,
+              category: category as any,
+              scope: targetScope,
+            },
+            { duplicateThreshold: 0.98 }
+          );
 
-          if (existing.length > 0 && existing[0].score > 0.98) {
+          if (writeResult.action === "merged") {
             return {
               content: [
                 {
                   type: "text",
-                  text: `Similar memory already exists: "${existing[0].entry.text}"`,
+                  text: `Merged into existing memory: "${writeResult.entry.text}"`,
                 },
               ],
               details: {
-                action: "duplicate",
-                existingId: existing[0].entry.id,
-                existingText: existing[0].entry.text,
-                existingScope: existing[0].entry.scope,
-                similarity: existing[0].score,
+                action: "merged",
+                existingId: writeResult.mergedIntoId,
+                existingText: writeResult.entry.text,
+                existingScope: writeResult.entry.scope,
+                similarity: writeResult.similarity,
               },
             };
           }
 
-          const entry = await context.store.store({
-            text,
-            vector,
-            importance: safeImportance,
-            category: category as any,
-            scope: targetScope,
-          });
+          const entry = writeResult.entry;
 
           return {
             content: [{ type: "text", text: `Stored: "${text.slice(0, 100)}${text.length > 100 ? '...' : ''}" in scope '${targetScope}'` }],
@@ -490,20 +505,34 @@ export function registerMemoryStatsTool(api: OpenClawPluginApi, context: ToolCon
           const stats = await context.store.stats(scopeFilter);
           const scopeManagerStats = context.scopeManager.getStats();
           const retrievalConfig = context.retriever.getConfig();
-
-          const text = [
+          const lines = [
             `Memory Statistics:`,
             `• Total memories: ${stats.totalCount}`,
             `• Available scopes: ${scopeManagerStats.totalScopes}`,
             `• Retrieval mode: ${retrievalConfig.mode}`,
+            `• Ranking mode: ${retrievalConfig.ranking}`,
             `• FTS support: ${context.store.hasFtsSupport ? 'Yes' : 'No'}`,
+          ];
+
+          if (retrievalConfig.ranking === "salience") {
+            lines.push(
+              `• Salience weights: ` +
+              `similarity=${retrievalConfig.salienceWeights.similarity.toFixed(2)}, ` +
+              `recency=${retrievalConfig.salienceWeights.recency.toFixed(2)}, ` +
+              `reinforcement=${retrievalConfig.salienceWeights.reinforcement.toFixed(2)}, ` +
+              `importance=${retrievalConfig.salienceWeights.importance.toFixed(2)}`
+            );
+          }
+
+          lines.push(
             ``,
             `Memories by scope:`,
             ...Object.entries(stats.scopeCounts).map(([s, count]) => `  • ${s}: ${count}`),
             ``,
             `Memories by category:`,
-            ...Object.entries(stats.categoryCounts).map(([c, count]) => `  • ${c}: ${count}`),
-          ].join('\n');
+            ...Object.entries(stats.categoryCounts).map(([c, count]) => `  • ${c}: ${count}`)
+          );
+          const text = lines.join('\n');
 
           return {
             content: [{ type: "text", text }],
