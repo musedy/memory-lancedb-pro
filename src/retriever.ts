@@ -40,8 +40,9 @@ export interface RetrievalConfig {
   /** Reranker provider format. Determines request/response shape and auth header.
    *  - "jina" (default): Authorization: Bearer, string[] documents, results[].relevance_score
    *  - "siliconflow": same format as jina (alias, for clarity)
+   *  - "voyage": Authorization: Bearer, string[] documents, data[].relevance_score
    *  - "pinecone": Api-Key header, {text}[] documents, data[].score */
-  rerankProvider?: "jina" | "siliconflow" | "pinecone";
+  rerankProvider?: "jina" | "siliconflow" | "voyage" | "pinecone";
   /** Allow non-allowlisted/non-HTTPS rerank endpoint (default false). */
   allowUntrustedRerankEndpoint: boolean;
   /**
@@ -163,7 +164,7 @@ function validateRerankEndpoint(endpoint: string): { ok: true } | { ok: false; r
 // Rerank Provider Adapters
 // ============================================================================
 
-type RerankProvider = "jina" | "siliconflow" | "pinecone";
+type RerankProvider = "jina" | "siliconflow" | "voyage" | "pinecone";
 
 interface RerankItem { index: number; score: number }
 
@@ -192,6 +193,20 @@ function buildRerankRequest(
           rank_fields: ["text"],
         },
       };
+    case "voyage":
+      return {
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        body: {
+          model,
+          query,
+          documents,
+          // Voyage uses top_k (not top_n) to limit reranked outputs.
+          top_k: topN,
+        },
+      };
     case "siliconflow":
     case "jina":
     default:
@@ -215,20 +230,56 @@ function parseRerankResponse(
   provider: RerankProvider,
   data: Record<string, unknown>,
 ): RerankItem[] | null {
+  const parseItems = (
+    items: unknown,
+    scoreKeys: Array<"score" | "relevance_score">,
+  ): RerankItem[] | null => {
+    if (!Array.isArray(items)) return null;
+    const parsed: RerankItem[] = [];
+    for (const raw of items as Array<Record<string, unknown>>) {
+      const index = typeof raw?.index === "number" ? raw.index : Number(raw?.index);
+      if (!Number.isFinite(index)) continue;
+      let score: number | null = null;
+      for (const key of scoreKeys) {
+        const value = raw?.[key];
+        const n = typeof value === "number" ? value : Number(value);
+        if (Number.isFinite(n)) {
+          score = n;
+          break;
+        }
+      }
+      if (score === null) continue;
+      parsed.push({ index, score });
+    }
+    return parsed.length > 0 ? parsed : null;
+  };
+
   switch (provider) {
     case "pinecone": {
-      // Pinecone: { data: [{ index, score, document }] }
-      const items = data.data as Array<{ index: number; score: number }> | undefined;
-      if (!Array.isArray(items)) return null;
-      return items.map(r => ({ index: r.index, score: r.score }));
+      // Pinecone: usually { data: [{ index, score, ... }] }
+      // Also tolerate results[] with score/relevance_score for robustness.
+      return (
+        parseItems(data.data, ["score", "relevance_score"]) ??
+        parseItems(data.results, ["score", "relevance_score"])
+      );
+    }
+    case "voyage": {
+      // Voyage: usually { data: [{ index, relevance_score }] }
+      // Also tolerate results[] for compatibility across gateways.
+      return (
+        parseItems(data.data, ["relevance_score", "score"]) ??
+        parseItems(data.results, ["relevance_score", "score"])
+      );
     }
     case "siliconflow":
     case "jina":
     default: {
-      // Jina / SiliconFlow: { results: [{ index, relevance_score }] }
-      const items = data.results as Array<{ index: number; relevance_score: number }> | undefined;
-      if (!Array.isArray(items)) return null;
-      return items.map(r => ({ index: r.index, score: r.relevance_score }));
+      // Jina / SiliconFlow: usually { results: [{ index, relevance_score }] }
+      // Also tolerate data[] for compatibility across gateways.
+      return (
+        parseItems(data.results, ["relevance_score", "score"]) ??
+        parseItems(data.data, ["relevance_score", "score"])
+      );
     }
   }
 }
@@ -331,8 +382,8 @@ export class MemoryRetriever {
       this.runBM25Search(query, candidatePoolSize, scopeFilter, category),
     ]);
 
-    // Fuse results using RRF
-    const fusedResults = this.fuseResults(vectorResults, bm25Results);
+    // Fuse results using RRF (async: validates BM25-only entries exist in store)
+    const fusedResults = await this.fuseResults(vectorResults, bm25Results);
 
     // Apply minimum score threshold
     const filtered = fusedResults.filter(r => r.score >= this.config.minScore);
@@ -405,10 +456,10 @@ export class MemoryRetriever {
     }));
   }
 
-  private fuseResults(
+  private async fuseResults(
     vectorResults: Array<MemorySearchResult & { rank: number }>,
     bm25Results: Array<MemorySearchResult & { rank: number }>
-  ): RetrievalResult[] {
+  ): Promise<RetrievalResult[]> {
     // Create maps for quick lookup
     const vectorMap = new Map<string, MemorySearchResult & { rank: number }>();
     const bm25Map = new Map<string, MemorySearchResult & { rank: number }>();
@@ -431,6 +482,18 @@ export class MemoryRetriever {
       const vectorResult = vectorMap.get(id);
       const bm25Result = bm25Map.get(id);
 
+      // FIX(#15): BM25-only results may be "ghost" entries whose vector data was
+      // deleted but whose FTS index entry lingers until the next index rebuild.
+      // Validate that the entry actually exists in the store before including it.
+      if (!vectorResult && bm25Result) {
+        try {
+          const exists = await this.store.hasId(id);
+          if (!exists) continue; // Skip ghost entry
+        } catch {
+          // If hasId fails, keep the result (fail-open)
+        }
+      }
+
       // Use the result with more complete data (prefer vector result if both exist)
       const baseResult = vectorResult || bm25Result!;
 
@@ -440,12 +503,12 @@ export class MemoryRetriever {
       const bm25Hit = bm25Result ? 1 : 0;
 
       // Base = vector score; BM25 hit boosts by up to 15%
-      // BM25-only results use their normalized score (floor 0.5) so exact keyword
-      // matches aren't buried — e.g. searching "JINA_API_KEY" should surface even
-      // when vector distance is large.
+      // BM25-only results use their raw BM25 score so exact keyword matches
+      // (e.g. searching "JINA_API_KEY") still surface. The previous floor of 0.5
+      // was too generous and allowed ghost entries to survive hardMinScore (0.35).
       const fusedScore = vectorResult
         ? clamp01(vectorScore + (bm25Hit * 0.15 * vectorScore), 0.1)
-        : clamp01(Math.max(bm25Result!.score, 0.5), 0.1);
+        : clamp01(bm25Result!.score, 0.1);
 
       fusedResults.push({
         entry: baseResult.entry,

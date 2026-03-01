@@ -2,7 +2,7 @@
   "id": "memory-lancedb-pro",
   "name": "Memory (LanceDB Pro)",
   "description": "Enhanced LanceDB-backed long-term memory with hybrid retrieval, multi-scope isolation, and management CLI",
-  "version": "1.0.9",
+  "version": "1.0.13",
   "kind": "memory",
   "configSchema": {
     "type": "object",
@@ -58,7 +58,15 @@
         "type": "boolean"
       },
       "autoRecall": {
-        "type": "boolean"
+        "type": "boolean",
+        "default": false
+      },
+      "autoRecallMinLength": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+        "default": 15,
+        "description": "Minimum prompt length (in characters) to trigger auto-recall. Prompts shorter than this are skipped. Default: 15 for English, 6 for CJK."
       },
       "captureAssistant": {
         "type": "boolean"
@@ -166,6 +174,7 @@
             "enum": [
               "jina",
               "siliconflow",
+              "voyage",
               "pinecone"
             ],
             "default": "jina",
@@ -328,6 +337,11 @@
       "label": "Auto-Recall",
       "help": "Automatically inject relevant memories into context"
     },
+    "autoRecallMinLength": {
+      "label": "Auto-Recall Min Length",
+      "help": "Minimum prompt length to trigger auto-recall (shorter prompts are skipped). Default: 15 chars for English, 6 for CJK.",
+      "advanced": true
+    },
     "captureAssistant": {
       "label": "Capture Assistant Messages",
       "help": "Also auto-capture assistant messages (default false to reduce memory pollution)",
@@ -409,7 +423,7 @@
     },
     "retrieval.rerankProvider": {
       "label": "Reranker Provider",
-      "help": "Provider format: jina (default), siliconflow, or pinecone",
+      "help": "Provider format: jina (default), siliconflow, voyage, or pinecone",
       "advanced": true
     },
     "retrieval.candidatePoolSize": {

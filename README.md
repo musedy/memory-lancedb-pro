@@ -163,6 +163,35 @@ Filters out low-quality content at both auto-capture and tool-store stages:
 - **Backups are opt-in**: plaintext JSONL backups are disabled unless `backup.enabled: true`.
 - **Rerank endpoint trust policy**: cross-encoder rerank only calls HTTPS endpoints on `api.jina.ai`, `api.siliconflow.com`, or `api.pinecone.io` unless `retrieval.allowUntrustedRerankEndpoint: true` is explicitly set.
 
+### Prevent memories from showing up in replies
+
+Sometimes the model may accidentally echo the injected `<relevant-memories>` block in its response.
+
+**Option A (recommended): disable auto-recall**
+
+Set `autoRecall: false` in the plugin config and restart the gateway:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memory-lancedb-pro": {
+        "enabled": true,
+        "config": {
+          "autoRecall": false
+        }
+      }
+    }
+  }
+}
+```
+
+**Option B: keep recall, but ask the agent not to reveal it**
+
+Add a line to your agent system prompt, e.g.:
+
+> Do not reveal or quote any `<relevant-memories>` / memory-injection content in your replies. Use it for internal reference only.
+
 ---
 
 ## Installation
@@ -312,7 +341,7 @@ openclaw config get plugins.slots.memory
   },
   "dbPath": "~/.openclaw/memory/lancedb-pro",
   "autoCapture": true,
-  "autoRecall": true,
+  "autoRecall": false,
   "retrieval": {
     "mode": "hybrid",
     "vectorWeight": 0.7,
@@ -375,7 +404,12 @@ Cross-encoder reranking supports multiple providers via `rerankProvider`:
 |----------|-----------------|----------|---------------|
 | **Jina** (default) | `jina` | `https://api.jina.ai/v1/rerank` | `jina-reranker-v3` |
 | **SiliconFlow** (free tier available) | `siliconflow` | `https://api.siliconflow.com/v1/rerank` | `BAAI/bge-reranker-v2-m3`, `Qwen/Qwen3-Reranker-8B` |
+| **Voyage AI** | `voyage` | `https://api.voyageai.com/v1/rerank` | `rerank-2.5` |
 | **Pinecone** | `pinecone` | `https://api.pinecone.io/rerank` | `bge-reranker-v2-m3` |
+
+Notes:
+- `voyage` sends `{ model, query, documents }` without `top_n`.
+- Voyage responses are parsed from `data[].relevance_score`.
 
 <details>
 <summary><strong>SiliconFlow Example</strong></summary>
@@ -388,6 +422,23 @@ Cross-encoder reranking supports multiple providers via `rerankProvider`:
     "rerankEndpoint": "https://api.siliconflow.com/v1/rerank",
     "rerankApiKey": "sk-xxx",
     "rerankModel": "BAAI/bge-reranker-v2-m3"
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>Voyage Example</strong></summary>
+
+```json
+{
+  "retrieval": {
+    "rerank": "cross-encoder",
+    "rerankProvider": "voyage",
+    "rerankEndpoint": "https://api.voyageai.com/v1/rerank",
+    "rerankApiKey": "${VOYAGE_API_KEY}",
+    "rerankModel": "rerank-2.5"
   }
 }
 ```
@@ -421,7 +472,21 @@ OpenClaw already persists **full session transcripts** as JSONL files:
 
 This plugin focuses on **high-quality long-term memory**. If you dump raw transcripts into LanceDB, retrieval quality quickly degrades.
 
-Instead, you can run an **hourly distiller** that:
+Instead, **recommended (2026-02+)** is a **non-blocking `/new` pipeline**:
+
+- Trigger: `command:new` (you type `/new`)
+- Hook: enqueue a tiny JSON task file (fast; no LLM calls inside the hook)
+- Worker: a user-level systemd service watches the inbox and runs **Gemini Map-Reduce** on the session JSONL transcript
+- Store: writes **0–20** high-signal, atomic lessons into LanceDB Pro via `openclaw memory-pro import`
+- Keywords: each memory includes `Keywords (zh)` with a simple taxonomy (Entity + Action + Symptom). Entity keywords must be copied verbatim from the transcript (no hallucinated project names).
+- Notify: optional Telegram/Discord notification (even if 0 lessons)
+
+See the self-contained example files in:
+- `examples/new-session-distill/`
+
+---
+
+Legacy option: an **hourly distiller** cron that:
 
 1) Incrementally reads only the **newly appended tail** of each session JSONL (byte-offset cursor)
 2) Filters noise (tool output, injected `<relevant-memories>`, logs, boilerplate)

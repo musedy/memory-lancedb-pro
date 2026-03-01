@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.13
+
+- Fix: Force `encoding_format: "float"` for OpenAI-compatible embedding requests to avoid base64/float ambiguity and dimension mismatch issues with some providers/gateways.
+- Feat: Add Voyage AI (`voyage`) as a supported rerank provider, using `top_k` and `Authorization: Bearer` header.
+- Refactor: Harden rerank response parser to accept both `results[]`/`data[]` payload shapes and `relevance_score`/`score` field names across all providers.
+
+## 1.0.12
+
+- Fix: ghost memories stuck in autoRecall after deletion (#15). BM25-only results from stale FTS index are now validated via `store.hasId()` before inclusion in fused results. Removed the BM25-only floor score of 0.5 that allowed deleted entries to survive `hardMinScore` filtering.
+- Fix: HEARTBEAT pattern now matches anywhere in the prompt (not just at start), preventing autoRecall from triggering on prefixed HEARTBEAT messages.
+- Add: `autoRecallMinLength` config option to set a custom minimum prompt length for autoRecall (default: 15 chars English, 6 CJK). Prompts shorter than this threshold are skipped.
+- Add: `ping`, `pong`, `test`, `debug` added to skip patterns in adaptive retrieval.
+
+## 1.0.11
+
+- Change: set `autoRecall` default to `false` to avoid the model echoing injected `<relevant-memories>` blocks.
+
+## 1.0.10
+
+- Fix: avoid blocking OpenClaw gateway startup on external network calls by running startup self-checks in the background with timeouts.
+
 ## 1.0.9
 
 - Change: update default `retrieval.rerankModel` to `jina-reranker-v3` (still fully configurable).
