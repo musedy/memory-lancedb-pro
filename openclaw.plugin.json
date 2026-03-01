@@ -264,6 +264,43 @@
           }
         }
       },
+      "curation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable curation/hygiene engine scaffold (Phase 3 placeholder, no deletions yet)."
+          },
+          "decayHalfLifeDays": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3650,
+            "default": 60,
+            "description": "Half-life (days) used by future hygiene scoring/decay logic."
+          },
+          "pruneThreshold": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.2,
+            "description": "Future prune score threshold. Lower keeps more memories."
+          },
+          "maxDeletesPerRun": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000,
+            "default": 100,
+            "description": "Future safety cap for maximum deletes per curation run."
+          },
+          "schedule": {
+            "type": "string",
+            "default": "0 3 * * *",
+            "description": "Future scheduler expression (cron-style) for curation runs."
+          }
+        }
+      },
       "scopes": {
         "type": "object",
         "additionalProperties": false,
@@ -448,6 +485,31 @@
     "backup.keepDays": {
       "label": "Backup Retention (days)",
       "help": "How many daily backup files to keep before pruning old backups.",
+      "advanced": true
+    },
+    "curation.enabled": {
+      "label": "Enable Curation",
+      "help": "Phase 3 scaffold flag for curation/hygiene engine. Default OFF and no deletions are executed yet.",
+      "advanced": true
+    },
+    "curation.decayHalfLifeDays": {
+      "label": "Curation Decay Half-Life",
+      "help": "Half-life in days for future curation decay scoring.",
+      "advanced": true
+    },
+    "curation.pruneThreshold": {
+      "label": "Curation Prune Threshold",
+      "help": "Future cutoff threshold for pruning candidates (0-1).",
+      "advanced": true
+    },
+    "curation.maxDeletesPerRun": {
+      "label": "Curation Max Deletes",
+      "help": "Future hard safety cap for delete operations per run.",
+      "advanced": true
+    },
+    "curation.schedule": {
+      "label": "Curation Schedule",
+      "help": "Future cron-style schedule for automatic curation runs.",
       "advanced": true
     },
     "scopes.default": {
